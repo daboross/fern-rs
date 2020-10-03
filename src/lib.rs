@@ -222,7 +222,7 @@ mod log_impl;
 
 #[cfg(feature = "colored")]
 pub mod colors;
-#[cfg(all(not(windows), feature = "syslog-3", feature = "syslog-4"))]
+#[cfg(all(not(windows), feature = "syslog-3", feature = "syslog-4", feature = "syslog-5"))]
 pub mod syslog;
 
 pub mod meta;
@@ -249,6 +249,12 @@ type Syslog4Rfc5424Logger = syslog4::Logger<
     (i32, HashMap<String, HashMap<String, String>>, String),
     syslog4::Formatter5424,
 >;
+
+#[cfg(all(not(windows), feature = "syslog-5"))]
+type Syslog5Rfc3164Logger = syslog5::Logger<syslog5::LoggerBackend, syslog5::Formatter3164>;
+
+#[cfg(all(not(windows), feature = "syslog-5"))]
+type Syslog5Rfc5424Logger = syslog5::Logger<syslog5::LoggerBackend, syslog5::Formatter5424>;
 
 /// Convenience method for opening a log file with common options.
 ///

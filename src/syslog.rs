@@ -5,14 +5,14 @@ Be sure to depend on `syslog` and the `syslog` feature in `Cargo.toml`:
 
 ```toml
 [dependencies]
-fern = { version = "0.5", features = ["syslog-4"] }]
-syslog = "4"
+fern = { version = "0.5", features = ["syslog-5"] }]
+syslog = "5"
 ```
 
 To use `syslog`, simply create the log you want, and pass it into `Dispatch::chain`:
 
 ```no_run
-# use syslog4 as syslog;
+# use syslog5 as syslog;
 # fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
 let formatter = syslog::Formatter3164 {
     facility: syslog::Facility::LOG_USER,
@@ -33,12 +33,7 @@ fern::Dispatch::new()
 
 ## Alternate syslog versions
 
-If you're using syslog=4.0.0 exactly, one line "ok" will be printed to stdout on log configuration.
-This is [a bug in syslog](https://github.com/Geal/rust-syslog/issues/39), and there is nothing we
-can change in fern to fix that.
-
-One way to avoid this is to use an earlier version of syslog, which `fern` also supports. To do
-this, depend on `syslog = 3` instead.
+Fern also supports syslog3, if you want to use that:
 
 ```toml
 [dependencies]
@@ -59,8 +54,8 @@ fern::Dispatch::new()
 # fn main() { setup_logging().ok(); }
 ```
 
-The rest of this document applies to both syslog 3 and syslog 4, but the examples will be using
-syslog 4 as it is the latest version.
+The rest of this document applies to both syslog 3 and syslog 5, but the examples will be using
+syslog 5 as it is the latest version.
 
 ---
 
@@ -71,7 +66,7 @@ However, you probably will want to format messages you also send to stdout! Fort
 configuration is easy with fern:
 
 ```no_run
-# use syslog4 as syslog;
+# use syslog5 as syslog;
 # fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
 let syslog_formatter = syslog::Formatter3164 {
     facility: syslog::Facility::LOG_USER,
@@ -116,7 +111,7 @@ One last pattern you might want to know: creating a log target which must be exp
 in order to work.
 
 ```no_run
-# use syslog4 as syslog;
+# use syslog5 as syslog;
 # fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
 # let formatter = syslog::Formatter3164 {
 #     facility: syslog::Facility::LOG_USER,
