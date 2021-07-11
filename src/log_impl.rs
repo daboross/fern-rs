@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     fmt, fs,
     io::{self, BufWriter, Write},
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Mutex},
 };
 
 #[cfg(feature = "date-based")]
@@ -29,8 +29,12 @@ pub enum LevelConfiguration {
 }
 
 pub struct Dispatch {
-    pub output: Vec<Output>,
+    pub output: Vec<Box<dyn Log>>,
+    /// The level when no level override for a module matches
     pub default_level: log::LevelFilter,
+    /// The actual maximum level computed based on the bounds of all children.
+    /// The global level must be set to at least this value.
+    pub max_level: log::LevelFilter,
     pub levels: LevelConfiguration,
     pub format: Option<Box<Formatter>>,
     pub filters: Vec<Box<Filter>>,
@@ -57,80 +61,108 @@ pub struct FormatCallback<'a>(InnerFormatCallback<'a>);
 
 struct InnerFormatCallback<'a>(&'a mut bool, &'a Dispatch, &'a log::Record<'a>);
 
-pub enum Output {
-    Stdout(Stdout),
-    Stderr(Stderr),
-    File(File),
-    Sender(Sender),
-    #[cfg(all(not(windows), feature = "syslog-3"))]
-    Syslog3(Syslog3),
-    #[cfg(all(not(windows), feature = "syslog-4"))]
-    Syslog4Rfc3164(Syslog4Rfc3164),
-    #[cfg(all(not(windows), feature = "syslog-4"))]
-    Syslog4Rfc5424(Syslog4Rfc5424),
-    Dispatch(Dispatch),
-    SharedDispatch(Arc<Dispatch>),
-    OtherBoxed(Box<dyn Log>),
-    OtherStatic(&'static dyn Log),
-    Panic(Panic),
-    Writer(Writer),
-    #[cfg(feature = "date-based")]
-    DateBased(DateBased),
-    #[cfg(all(not(windows), feature = "reopen-03"))]
-    Reopen(Reopen),
-}
-
+/// Prints all messages to stdout with `line_sep` separator.
 pub struct Stdout {
-    pub stream: io::Stdout,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: io::Stdout,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Prints all messages to stderr with `line_sep` separator.
 pub struct Stderr {
-    pub stream: io::Stderr,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: io::Stderr,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Writes all messages to file with `line_sep` separator.
 pub struct File {
-    pub stream: Mutex<BufWriter<fs::File>>,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: Mutex<BufWriter<fs::File>>,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Writes all messages to mpst::Sender with `line_sep` separator.
 pub struct Sender {
-    pub stream: Mutex<mpsc::Sender<String>>,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: Mutex<mpsc::Sender<String>>,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Writes all messages to the writer with `line_sep` separator.
 pub struct Writer {
-    pub stream: Mutex<Box<dyn Write + Send>>,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: Mutex<Box<dyn Write + Send>>,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Writes all messages to the reopen::Reopen file with `line_sep`
+/// separator.
 #[cfg(all(not(windows), feature = "reopen-03"))]
 pub struct Reopen {
-    pub stream: Mutex<reopen::Reopen<fs::File>>,
-    pub line_sep: Cow<'static, str>,
+    pub(crate) stream: Mutex<reopen::Reopen<fs::File>>,
+    pub(crate) line_sep: Cow<'static, str>,
 }
 
+/// Passes all messages to the syslog.
 #[cfg(all(not(windows), feature = "syslog-3"))]
 pub struct Syslog3 {
-    pub inner: syslog3::Logger,
+    pub(crate) inner: syslog3::Logger,
 }
 
+/// Passes all messages to the syslog.
 #[cfg(all(not(windows), feature = "syslog-4"))]
 pub struct Syslog4Rfc3164 {
-    pub inner: Mutex<Syslog4Rfc3164Logger>,
+    pub(crate) inner: Mutex<Syslog4Rfc3164Logger>,
 }
 
+/// Passes all messages to the syslog.
 #[cfg(all(not(windows), feature = "syslog-4"))]
 pub struct Syslog4Rfc5424 {
-    pub inner: Mutex<Syslog4Rfc5424Logger>,
-    pub transform: Box<
+    pub(crate) inner: Mutex<Syslog4Rfc5424Logger>,
+    pub(crate) transform: Box<
         dyn Fn(&log::Record) -> (i32, HashMap<String, HashMap<String, String>>, String)
             + Sync
             + Send,
     >,
 }
 
+/// Logger which will panic whenever anything is logged. The panic
+/// will be exactly the message of the log.
+///
+/// `Panic` is useful primarily as a secondary logger, filtered by warning or
+/// error.
+///
+/// # Examples
+///
+/// This configuration will output all messages to stdout and panic if an Error
+/// message is sent.
+///
+/// ```
+/// fern::Dispatch::new()
+///     // format, etc.
+///     .chain(std::io::stdout())
+///     .chain(
+///         fern::Dispatch::new()
+///             .level(log::LevelFilter::Error)
+///             .chain(fern::Panic),
+///     )
+///     # /*
+///     .apply()?;
+///     # */ .into_log();
+/// ```
+///
+/// This sets up a "panic on warn+" logger, and ignores errors so it can be
+/// called multiple times.
+///
+/// This might be useful in test setup, for example, to disallow warn-level
+/// messages.
+///
+/// ```no_run
+/// fn setup_panic_logging() {
+///     fern::Dispatch::new()
+///         .level(log::LevelFilter::Warn)
+///         .chain(fern::Panic)
+///         .apply()
+///         // ignore errors from setting up logging twice
+///         .ok();
+/// }
+/// ```
 pub struct Panic;
 
 pub struct Null;
@@ -139,8 +171,8 @@ pub struct Null;
 #[derive(Debug)]
 #[cfg(feature = "date-based")]
 pub struct DateBased {
-    pub config: DateBasedConfig,
-    pub state: Mutex<DateBasedState>,
+    pub(crate) config: DateBasedConfig,
+    pub(crate) state: Mutex<DateBasedState>,
 }
 
 #[derive(Debug)]
@@ -293,83 +325,6 @@ impl LevelConfiguration {
     }
 }
 
-impl Log for Output {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        match *self {
-            Output::Stdout(ref s) => s.enabled(metadata),
-            Output::Stderr(ref s) => s.enabled(metadata),
-            Output::File(ref s) => s.enabled(metadata),
-            Output::Sender(ref s) => s.enabled(metadata),
-            Output::Dispatch(ref s) => s.enabled(metadata),
-            Output::SharedDispatch(ref s) => s.enabled(metadata),
-            Output::OtherBoxed(ref s) => s.enabled(metadata),
-            Output::OtherStatic(ref s) => s.enabled(metadata),
-            #[cfg(all(not(windows), feature = "syslog-3"))]
-            Output::Syslog3(ref s) => s.enabled(metadata),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc3164(ref s) => s.enabled(metadata),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc5424(ref s) => s.enabled(metadata),
-            Output::Panic(ref s) => s.enabled(metadata),
-            Output::Writer(ref s) => s.enabled(metadata),
-            #[cfg(feature = "date-based")]
-            Output::DateBased(ref s) => s.enabled(metadata),
-            #[cfg(all(not(windows), feature = "reopen-03"))]
-            Output::Reopen(ref s) => s.enabled(metadata),
-        }
-    }
-
-    fn log(&self, record: &log::Record) {
-        match *self {
-            Output::Stdout(ref s) => s.log(record),
-            Output::Stderr(ref s) => s.log(record),
-            Output::File(ref s) => s.log(record),
-            Output::Sender(ref s) => s.log(record),
-            Output::Dispatch(ref s) => s.log(record),
-            Output::SharedDispatch(ref s) => s.log(record),
-            Output::OtherBoxed(ref s) => s.log(record),
-            Output::OtherStatic(ref s) => s.log(record),
-            #[cfg(all(not(windows), feature = "syslog-3"))]
-            Output::Syslog3(ref s) => s.log(record),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc3164(ref s) => s.log(record),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc5424(ref s) => s.log(record),
-            Output::Panic(ref s) => s.log(record),
-            Output::Writer(ref s) => s.log(record),
-            #[cfg(feature = "date-based")]
-            Output::DateBased(ref s) => s.log(record),
-            #[cfg(all(not(windows), feature = "reopen-03"))]
-            Output::Reopen(ref s) => s.log(record),
-        }
-    }
-
-    fn flush(&self) {
-        match *self {
-            Output::Stdout(ref s) => s.flush(),
-            Output::Stderr(ref s) => s.flush(),
-            Output::File(ref s) => s.flush(),
-            Output::Sender(ref s) => s.flush(),
-            Output::Dispatch(ref s) => s.flush(),
-            Output::SharedDispatch(ref s) => s.flush(),
-            Output::OtherBoxed(ref s) => s.flush(),
-            Output::OtherStatic(ref s) => s.flush(),
-            #[cfg(all(not(windows), feature = "syslog-3"))]
-            Output::Syslog3(ref s) => s.flush(),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc3164(ref s) => s.flush(),
-            #[cfg(all(not(windows), feature = "syslog-4"))]
-            Output::Syslog4Rfc5424(ref s) => s.flush(),
-            Output::Panic(ref s) => s.flush(),
-            Output::Writer(ref s) => s.flush(),
-            #[cfg(feature = "date-based")]
-            Output::DateBased(ref s) => s.flush(),
-            #[cfg(all(not(windows), feature = "reopen-03"))]
-            Output::Reopen(ref s) => s.flush(),
-        }
-    }
-}
-
 impl Log for Null {
     fn enabled(&self, _: &log::Metadata) -> bool {
         false
@@ -490,7 +445,24 @@ impl<'a> FormatCallback<'a> {
 
 // No need to write this twice (used for Stdout and Stderr structs)
 macro_rules! std_log_impl {
-    ($ident:ident) => {
+    ($ident:ident, $constructor:path) => {
+        impl $ident {
+            pub fn new() -> Self {
+                $constructor().into()
+            }
+
+            pub fn line_sep(mut self, line_sep: Cow<'static, str>) -> Self {
+                self.line_sep = line_sep;
+                self
+            }
+        }
+
+        impl Default for $ident {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl Log for $ident {
             fn enabled(&self, _: &log::Metadata) -> bool {
                 true
@@ -518,11 +490,20 @@ macro_rules! std_log_impl {
                 let _ = self.stream.lock().flush();
             }
         }
+
+        impl From<io::$ident> for $ident {
+            fn from(stream: io::$ident) -> Self {
+                Self {
+                    stream,
+                    line_sep: "\n".into(),
+                }
+            }
+        }
     };
 }
 
-std_log_impl!(Stdout);
-std_log_impl!(Stderr);
+std_log_impl!(Stdout, io::stdout);
+std_log_impl!(Stderr, io::stderr);
 
 macro_rules! writer_log_impl {
     ($ident:ident) => {
